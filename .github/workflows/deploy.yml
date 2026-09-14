@@ -1,0 +1,50 @@
+# 部署到 Netlify
+#
+# 为什么不在 Netlify 后台直接连仓库：私有仓库要 Netlify 的 GitHub App 授权（浏览器 OAuth），
+# 而公开仓库走纯 API 接的时候它又只会用 SSH 克隆，拿不到密钥 —— 试过几种组合都不行。
+# 换成本地/CI 构建再上传，就完全绕开了这一层：
+# GitHub 的服务器负责构建，再用 CLI 调 Netlify 接口把成品传上去。
+#
+# 需要两个仓库密钥（Settings → Secrets and variables → Actions）：
+#   NETLIFY_AUTH_TOKEN  Netlify 的 Personal Access Token
+#   NETLIFY_SITE_ID     站点的 site_id
+#
+# 好处：以后每次 push 到 main 都会自动重新部署。
+
+name: Deploy to Netlify
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: netlify-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建并部署（Netlify CLI 会读取站点上的环境变量）
+        run: npx --yes netlify-cli@latest deploy --build --prod
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          # 让 CLI 不要尝试交互式提问
+          NETLIFY_SITE_NAME: find-moment
+          CI: "true"

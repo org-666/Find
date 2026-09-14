@@ -17,6 +17,9 @@ next-env.d.ts
 supabase/.temp
 supabase/.branches
 
+# Netlify CLI 本地状态（里面是 site_id，不需要进仓库）
+.netlify
+
 # 由 npm run sql:bundle 生成的建表便利包
 supabase/CLOUD-SETUP.sql
 

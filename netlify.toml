@@ -1,0 +1,17 @@
+# Netlify 部署配置
+#
+# 为什么不用 Vercel：vercel.app 在国内被 DNS 污染（实测解析到 Facebook 的 IP 段、
+# TCP 443 直接超时），部署完自己也打不开。Netlify 的域名实测可达。
+#
+# Next.js 在 Netlify 上必须走官方的 Next.js Runtime（server actions、middleware、
+# 图片优化都靠它），所以这里显式挂上 @netlify/plugin-nextjs。
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
