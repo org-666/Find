@@ -96,8 +96,63 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
 
   const otpRef = useRef<HTMLInputElement>(null);
   const autoSubmitted = useRef(false);
+  /** 上次发码的时间戳，用来在页面被手机回收后重建倒计时 */
+  const sentAt = useRef(0);
 
   const address = email.trim();
+  const storageKey = `find-auth-${mode}`;
+
+  /**
+   * 手机浏览器会把切到后台的标签页整页卸载（尤其是从邮件 App 切回来的时候）。
+   * 一卸载，React 状态就全没了，页面会退回"输入邮箱"那一步——
+   * 用户看着明明收到了验证码，却只有一个要填邮箱的框，自然以为"登不上去"。
+   *
+   * 所以把「进行到哪一步 + 邮箱 + 什么时候发的码」存进 sessionStorage，
+   * 重新加载时自动恢复到验证码那一步。
+   */
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(storageKey);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { email?: string; step?: string; sentAt?: number };
+
+      if (typeof saved.email === "string" && saved.email.length > 0) {
+        setEmail(saved.email);
+      }
+
+      if (saved.step === "code" && typeof saved.email === "string") {
+        const elapsed = Math.floor((Date.now() - (saved.sentAt ?? 0)) / 1000);
+        setStep("code");
+        setCountdown(Math.max(0, RESEND_SECONDS - elapsed));
+        setHint(`邮件已发到 ${saved.email}：把里面的 6 位数字填在下面，或者直接点邮件里的链接`);
+      }
+    } catch {
+      // 隐私模式下 sessionStorage 可能不可用，忽略即可
+    }
+    // 只在挂载时读一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 状态变化就写回去
+  useEffect(() => {
+    try {
+      if (address.length === 0) {
+        sessionStorage.removeItem(storageKey);
+        return;
+      }
+      sessionStorage.setItem(storageKey, JSON.stringify({ email: address, step, sentAt: sentAt.current }));
+    } catch {
+      // 同上
+    }
+  }, [address, step, storageKey]);
+
+  function clearSaved() {
+    try {
+      sessionStorage.removeItem(storageKey);
+    } catch {
+      // 无所谓
+    }
+  }
 
   useEffect(() => {
     if (countdown <= 0) return;
@@ -163,6 +218,7 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
       setStep("code");
       setToken("");
       autoSubmitted.current = false;
+      sentAt.current = Date.now();
       setCountdown(RESEND_SECONDS);
       setHint(`邮件已发到 ${address}：把里面的 6 位数字填在下面，或者直接点邮件里的链接`);
     } catch (caught) {
@@ -199,6 +255,7 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
       }
 
       // 会话已经写进 cookie；没填过资料的话首页会自动把你送去 /profile
+      clearSaved();
       router.replace("/");
       router.refresh();
     } catch (caught) {
@@ -290,6 +347,7 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
             <button
               type="button"
               onClick={() => {
+                clearSaved();
                 setStep("email");
                 setToken("");
                 setError(null);
