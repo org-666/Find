@@ -27,16 +27,10 @@ type Props = {
   initialMoment: Moment | null;
   aiEnabled: boolean;
   nickname: string;
-  /**
-   * member：登录用户，能真正把需求写进匹配池
-   * guest： 没登录的试玩，解析能用，进匹配池时引导去登录
-   */
-  mode?: "member" | "guest";
 };
 
-export function SayForm({ initialMoment, aiEnabled, nickname, mode = "member" }: Props) {
+export function SayForm({ initialMoment, aiEnabled, nickname }: Props) {
   const router = useRouter();
-  const isGuest = mode === "guest";
   const [step, setStep] = useState<Step>(initialMoment ? "searching" : "input");
   const [rawInput, setRawInput] = useState(initialMoment?.raw_input ?? "");
   const [intent, setIntent] = useState<IntentResult | null>(() => (initialMoment ? intentFromMoment(initialMoment) : null));
@@ -131,26 +125,6 @@ export function SayForm({ initialMoment, aiEnabled, nickname, mode = "member" }:
     requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
-  /** 试玩模式：不写数据库，纯前端造一条需求出来，只是为了把界面走完 */
-  function enterDemoPool() {
-    if (!intent) return;
-    const now = Date.now();
-    setMoment({
-      id: "demo-moment",
-      user_id: "demo-user",
-      raw_input: rawInput,
-      activity_tag: intent.activityTag,
-      activity_detail: intent.activityDetail,
-      window_start: new Date(now).toISOString(),
-      window_end: new Date(now + intent.timeWindowMinutes * 60_000).toISOString(),
-      status: "searching",
-      created_at: new Date(now).toISOString(),
-    });
-    setStep("searching");
-  }
-
-  const isDemoMoment = moment?.id === "demo-moment";
-
   return (
     <div className="animate-rise flex min-h-0 flex-1 flex-col gap-6">
       {step === "input" && (
@@ -176,9 +150,8 @@ export function SayForm({ initialMoment, aiEnabled, nickname, mode = "member" }:
           busy={busy}
           error={error}
           shakeKey={shakeKey}
-          isGuest={isGuest}
           onIntentChange={setIntent}
-          onConfirm={isGuest ? enterDemoPool : () => void handlePublish()}
+          onConfirm={() => void handlePublish()}
           onBack={backToInput}
         />
       )}
@@ -186,7 +159,6 @@ export function SayForm({ initialMoment, aiEnabled, nickname, mode = "member" }:
       {step === "searching" && moment && (
         <MatchPanel
           moment={moment}
-          isDemo={isDemoMoment}
           onCancel={backToInput}
           onEnterChat={(next) => {
             setSession(next);
@@ -198,7 +170,6 @@ export function SayForm({ initialMoment, aiEnabled, nickname, mode = "member" }:
       {step === "chat" && session && (
         <TempChat
           session={session}
-          isDemo={isDemoMoment}
           onClose={() => {
             setSession(null);
             backToInput();
@@ -320,7 +291,6 @@ function ConfirmStep({
   busy,
   error,
   shakeKey,
-  isGuest,
   onIntentChange,
   onConfirm,
   onBack,
@@ -332,7 +302,6 @@ function ConfirmStep({
   busy: boolean;
   error: string | null;
   shakeKey: number;
-  isGuest: boolean;
   onIntentChange: (next: IntentResult) => void;
   onConfirm: () => void;
   onBack: () => void;

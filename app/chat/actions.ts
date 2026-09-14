@@ -1,38 +1,122 @@
 "use server";
 
 /**
- * 模块 E 的服务端动作
+ * 模块 E 的服务端动作（正式版）
  *
- * 试玩模式（免登录）里，对方是合成的，但走的是同一套动作接口：
- * 以后接上真实用户，把这里的合成逻辑换成读写 sessions/messages 表即可，界面不用改。
- *
- * 「不留记录」这条：试玩模式的消息只活在浏览器内存里，服务端一个字都不存。
- * 真实版本对应的是局结束后物理删除消息行（模块 D/E 的后半段）。
+ * 消息存在 session_messages 表里，但**局结束就物理删除**——这是"不留记录"的落地方式。
+ * 所有读写都走数据库函数，客户端永远拿不到对方是谁。
  */
 
+import { headers } from "next/headers";
 import { buildSuggestion, type Suggestion } from "@/lib/ai-suggest";
 import { rateLimit } from "@/lib/rate-limit";
-import { headers } from "next/headers";
+import { createServerSupabaseClient, getCurrentUser } from "@/lib/supabase-server";
 
+export type ChatMessageView = {
+  id: string;
+  mine: boolean;
+  kind: "text" | "status";
+  body: string;
+  createdAt: string;
+};
+
+export type MessagesResult = { ok: true; messages: ChatMessageView[] } | { ok: false; message: string };
+export type SendResult = { ok: true } | { ok: false; message: string };
 export type SuggestResult = { ok: true; suggestion: Suggestion } | { ok: false; message: string };
 
-export type PeerReplyResult =
-  | { ok: true; reply: string; kind: "text" | "status" }
-  | { ok: false; message: string };
+function humanize(message: string): string {
+  if (message.includes("NOT_AUTHENTICATED")) return "登录状态已失效，请重新登录";
+  if (message.includes("SESSION_NOT_OPEN")) return "这一局已经结束了";
+  if (message.includes("NOT_YOUR_SESSION")) return "这一局不是你的";
+  if (/does not exist|schema cache/i.test(message)) return "数据库还没建好会话相关的表";
+  return `操作失败：${message}`;
+}
 
-/* --------------------------------- AI 建议 --------------------------------- */
+/** 读消息。p_since 传上次读到的时间，就只拿增量 */
+export async function fetchMessagesAction(
+  sessionId: string,
+  sinceIso: string | null,
+): Promise<MessagesResult> {
+  const user = await getCurrentUser();
+  if (!user) return { ok: false, message: "登录状态已失效，请重新登录" };
 
+  try {
+    const supabase = await createServerSupabaseClient();
+    const { data, error } = await supabase.rpc("get_session_messages", {
+      p_session_id: sessionId,
+      p_since: sinceIso,
+    });
+    if (error) return { ok: false, message: humanize(error.message) };
+
+    const messages = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      id: String(row.id),
+      mine: Boolean(row.mine),
+      kind: (row.kind as "text" | "status") ?? "text",
+      body: String(row.body),
+      createdAt: String(row.created_at),
+    }));
+
+    return { ok: true, messages };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 发一条消息（三种快捷按钮走 kind="status"） */
+export async function sendMessageAction(
+  sessionId: string,
+  kind: "text" | "status",
+  body: string,
+): Promise<SendResult> {
+  const user = await getCurrentUser();
+  if (!user) return { ok: false, message: "登录状态已失效，请重新登录" };
+
+  const text = body.trim();
+  if (text.length === 0) return { ok: false, message: "说点什么再发" };
+  if (text.length > 100) return { ok: false, message: "最多 100 个字" };
+
+  try {
+    const supabase = await createServerSupabaseClient();
+    const { error } = await supabase.rpc("send_session_message", {
+      p_session_id: sessionId,
+      p_kind: kind,
+      p_body: text,
+    });
+    if (error) return { ok: false, message: humanize(error.message) };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 结束这一局：数据库里会把消息**物理删除** */
+export async function closeSessionAction(sessionId: string): Promise<SendResult> {
+  const user = await getCurrentUser();
+  if (!user) return { ok: false, message: "登录状态已失效，请重新登录" };
+
+  try {
+    const supabase = await createServerSupabaseClient();
+    const { error } = await supabase.rpc("close_session", { p_session_id: sessionId });
+    if (error) return { ok: false, message: humanize(error.message) };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** AI 给一句"该问什么"的提示（不替人聊天） */
 export async function suggestReplyAction(context: {
   activityDetail: string;
   lastPeerText: string | null;
   elapsedMinutes: number;
 }): Promise<SuggestResult> {
+  const user = await getCurrentUser();
+  if (!user) return { ok: false, message: "登录状态已失效，请重新登录" };
+
   const headerList = await headers();
   const ip = headerList.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
   const limited = rateLimit(`suggest:${ip}`, 30, 10 * 60_000);
-  if (!limited.ok) {
-    return { ok: false, message: `点得有点频繁，${limited.retryAfterSeconds} 秒后再试` };
-  }
+  if (!limited.ok) return { ok: false, message: `点得有点频繁，${limited.retryAfterSeconds} 秒后再试` };
 
   const suggestion = await buildSuggestion({
     activityDetail: context.activityDetail,
@@ -41,49 +125,4 @@ export async function suggestReplyAction(context: {
   });
 
   return { ok: true, suggestion };
-}
-
-/* -------------------------------- 对方回复 -------------------------------- */
-
-/** 合成对方的回应：按"我这句说了什么"给一个合理反应 */
-function pickPeerReply(mine: string, seed: number): { reply: string; kind: "text" | "status" } {
-  const text = mine;
-
-  if (text.includes("我到了")) return { reply: "我也快到了，等我两分钟", kind: "text" };
-  if (text.includes("我晚点")) return { reply: "行，那我先到附近逛逛", kind: "text" };
-  if (/在哪|哪等|位置|标志/.test(text)) return { reply: "我在入口那棵大树下面", kind: "text" };
-  if (/到哪|多久|还要/.test(text)) return { reply: "还有 5 分钟左右", kind: "text" };
-  if (/入口|门口|大树|地铁/.test(text)) return { reply: "看到了看到了", kind: "text" };
-  if (/谢谢|好的|行|ok/i.test(text)) return { reply: "嗯嗯", kind: "text" };
-
-  const generics = [
-    "我这边也差不多了",
-    "刚出门，稍等",
-    "你先到了跟我说一声",
-    "好，待会儿见",
-  ];
-  return { reply: generics[seed % generics.length], kind: "text" };
-}
-
-export async function demoPeerReplyAction(input: {
-  myMessage: string;
-  seed: number;
-}): Promise<PeerReplyResult> {
-  if (!input.myMessage.trim()) return { ok: false, message: "空消息" };
-
-  // 故意慢一点，让它看起来像对面真的在打字
-  await new Promise((resolve) => setTimeout(resolve, 1200 + (input.seed % 3) * 400));
-
-  return { ok: true, ...pickPeerReply(input.myMessage, Math.abs(input.seed)) };
-}
-
-/* -------------------------------- 结束这一局 -------------------------------- */
-
-export type CloseResult = { ok: true; closedAt: number } | { ok: false; message: string };
-
-export async function closeSessionAction(reason: "cancelled" | "expired" | "done"): Promise<CloseResult> {
-  // 试玩模式：服务端本来就没存任何东西，这里只是把"结束"这件事走一遍流程。
-  // 真实版本：把 sessions.status 置为 closed，并物理删除该局的 messages 行（不留记录）。
-  console.log(`[closeSession] 结束这一局，原因：${reason}（试玩模式，无数据需要清理）`);
-  return { ok: true, closedAt: Date.now() };
 }

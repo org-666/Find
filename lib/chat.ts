@@ -49,15 +49,8 @@ export function sanitizeMessage(input: string): { ok: true; value: string } | { 
 
 /* --------------------------------- 自动关闭 --------------------------------- */
 
-/** 局结束的判定：时间窗走完就关；试玩模式给个 90 秒的短局，方便看它真的会关 */
-export const DEMO_SESSION_MS = 90_000;
 /** 关门前留个提示，避免用户正打字就被关掉 */
 export const CLOSING_SOON_MS = 60_000;
-
-export function sessionDeadline(windowEndMs: number, now: number, isDemo: boolean): number {
-  if (isDemo) return Math.min(now + DEMO_SESSION_MS, Number.isFinite(windowEndMs) ? windowEndMs : now + DEMO_SESSION_MS);
-  return Number.isFinite(windowEndMs) ? windowEndMs : now + 2 * 60 * 60_000;
-}
 
 export function isSessionExpired(deadline: number, now: number): boolean {
   return now >= deadline;

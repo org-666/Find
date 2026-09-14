@@ -1,141 +1,152 @@
 "use server";
 
-import { buildConfirmProposal, type ConfirmProposal } from "@/lib/ai-confirm";
-import type { CandidateMoment, MatchResult } from "@/lib/matching";
-import { findMatches } from "@/lib/matching";
-import { DEMO_GRID, DEMO_USER_ID, syntheticCandidates } from "@/lib/matching-demo";
-import { rateLimit } from "@/lib/rate-limit";
-import { headers } from "next/headers";
+/**
+ * 模块 C / D 的服务端动作（正式版）
+ *
+ * 匹配不在 Node 里算，而是交给数据库函数：
+ * 用户的 RLS 只允许读自己那一行，所以只有数据库侧的 security definer 函数
+ * 才能看到别人的需求——但它**只返回模糊距离和时段重叠，不返回对方身份**。
+ *
+ * AI 仍然负责第一轮时间地点的确认文案（architecture.md 里 AI 的第二件事）。
+ */
 
-/** 界面上拿到的匹配结果：只有模糊信息，没有身份 */
+import { headers } from "next/headers";
+import { buildConfirmProposal } from "@/lib/ai-confirm";
+import { createServerSupabaseClient, getCurrentUser } from "@/lib/supabase-server";
+import { rateLimit } from "@/lib/rate-limit";
+
+export type Decision = "pending" | "go" | "skip";
+
+/** 给界面看的匹配状态：没有任何对方身份信息 */
 export type MatchView = {
-  momentId: string;
-  activityTag: string;
+  matchId: string;
   activityDetail: string;
   distanceLabel: string;
-  overlapMinutes: number;
-  score: number;
-  reasons: string[];
-  /** 这条候选有多少人（原型阶段就是 1，模块 D/E 会用上） */
-  peerCount: number;
+  overlapMinutes: number | null;
+  place: string | null;
+  etaMinutes: number | null;
+  confirmMessage: string | null;
+  myDecision: Decision;
+  peerDecision: Decision;
+  status: "pending" | "confirmed" | "declined" | "expired";
+  sessionId: string | null;
+  sessionExpiresAt: string | null;
 };
 
-export type SearchResult =
-  | { ok: true; match: MatchView; proposal: ConfirmProposal; searchedMs: number; candidatesScanned: number }
-  | { ok: false; message: string };
+export type MatchResult = { ok: true; match: MatchView | null } | { ok: false; message: string };
 
-export type RespondResult =
-  | { ok: true; peerDecision: "go" | "skip"; message: string }
-  | { ok: false; message: string };
+type Row = Record<string, unknown>;
 
-/** 试玩模式：把一条需求当成候选人池的种子 */
-function toCandidateMoment(input: {
-  rawInput: string;
-  activityTag: string;
-  activityDetail: string;
-  windowStart: number;
-  windowEnd: number;
-  grid?: string | null | undefined;
-}): CandidateMoment {
+function toView(row: Row): MatchView {
   return {
-    momentId: "demo-self",
-    userId: DEMO_USER_ID,
-    nickname: "我",
-    activityTag: input.activityTag,
-    activityDetail: input.activityDetail,
-    windowStart: input.windowStart,
-    windowEnd: input.windowEnd,
-    grid: input.grid ?? DEMO_GRID,
+    matchId: String(row.match_id),
+    activityDetail: String(row.activity_detail ?? ""),
+    distanceLabel: String(row.distance_label ?? "附近"),
+    overlapMinutes: row.overlap_minutes === null ? null : Number(row.overlap_minutes),
+    place: (row.place as string | null) ?? null,
+    etaMinutes: row.eta_minutes === null ? null : Number(row.eta_minutes),
+    confirmMessage: (row.confirm_message as string | null) ?? null,
+    myDecision: (row.my_decision as Decision) ?? "pending",
+    peerDecision: (row.peer_decision as Decision) ?? "pending",
+    status: (row.status as MatchView["status"]) ?? "pending",
+    sessionId: (row.session_id as string | null) ?? null,
+    sessionExpiresAt: (row.session_expires_at as string | null) ?? null,
   };
 }
 
-/**
- * 发起一次匹配搜索。
- *
- * 试玩模式（免登录）：候选人由 lib/matching-demo.ts 合成，
- * 但筛选、算距离、按时段重叠、打分排序走的都是 lib/matching.ts 里那套真引擎。
- *
- * 登录版（模块 C 的后半段）会把这里换成从 moments 表里查真实候选人，
- * 引擎和 AI 那一步都不用改。
- */
-export async function searchMatchAction(input: {
-  rawInput: string;
-  activityTag: string;
-  activityDetail: string;
-  windowStart: number;
-  windowEnd: number;
-  grid?: string | null;
-  mode?: "demo" | "live";
-}): Promise<SearchResult> {
-  // 试玩也要限流：这一步会调 AI，配了 key 就是真花钱
-  const headerList = await headers();
-  const ip = headerList.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-  const limited = rateLimit(`match:${ip}`, 20, 10 * 60_000);
-  if (!limited.ok) {
-    return { ok: false, message: `找得太频繁了，${limited.retryAfterSeconds} 秒后再试` };
-  }
+/** 把数据库里的错误码翻译成用户看得懂的话 */
+function humanizeDbError(message: string): string {
+  if (message.includes("NOT_AUTHENTICATED")) return "登录状态已失效，请重新登录";
+  if (message.includes("NO_ACTIVE_MOMENT")) return "你还没有正在找的需求，先说一句想干嘛";
+  if (message.includes("NOT_YOUR_MATCH")) return "这一局不是你的";
+  if (message.includes("SESSION_NOT_OPEN")) return "这一局已经结束了";
+  if (/does not exist|schema cache/i.test(message)) return "数据库还没建好匹配相关的表，请联系管理员";
+  return `操作失败：${message}`;
+}
 
-  const startedAt = Date.now();
-  const me = toCandidateMoment(input);
+/** 读当前这一局（界面用来轮询） */
+async function readMyMatch(): Promise<MatchView | null> {
+  const supabase = await createServerSupabaseClient();
+  const { data, error } = await supabase.rpc("get_my_match");
+  if (error) throw new Error(humanizeDbError(error.message));
 
-  // 试玩模式：故意等一会儿，模拟"系统在附近找人"的过程
-  if ((input.mode ?? "demo") === "demo") {
-    await new Promise((resolve) => setTimeout(resolve, 1800));
-  }
-
-  const pool = syntheticCandidates(me, startedAt);
-  const matches: MatchResult[] = findMatches(me, pool, { maxDistanceMeters: 1500, minOverlapMinutes: 15 });
-
-  if (matches.length === 0) {
-    return { ok: false, message: "附近这会儿还没有人也想做这件事，过一会儿再试" };
-  }
-
-  const best = matches[0];
-  const proposal = await buildConfirmProposal({
-    activityTag: best.activityTag,
-    activityDetail: best.activityDetail,
-    distanceLabel: best.distanceLabel,
-    distanceMeters: best.distanceMeters,
-    overlapMinutes: best.overlapMinutes,
-  });
-
-  return {
-    ok: true,
-    match: {
-      momentId: best.momentId,
-      activityTag: best.activityTag,
-      activityDetail: best.activityDetail,
-      distanceLabel: best.distanceLabel,
-      overlapMinutes: best.overlapMinutes,
-      score: best.score,
-      reasons: best.reasons,
-      peerCount: matches.length,
-    },
-    proposal,
-    searchedMs: Date.now() - startedAt,
-    candidatesScanned: pool.length,
-  };
+  const rows = (data ?? []) as Row[];
+  return rows.length > 0 ? toView(rows[0]) : null;
 }
 
 /**
- * 回应 AI 的第一轮确认：去 / 算了。
+ * 界面每次轮询都调它（第一次进入也调它），一次搞定三件事：
+ *   1. 我这一局还在不在
+ *   2. 不在就去池子里重新找（request_match 自己会去重，不会重复配对）
+ *   3. 配对存在但 AI 还没写确认文案，就补上
  *
- * 试玩模式：对方也立刻"去"，好让流程走完；
- * 登录版这里会写 matches 表并等对方真实回应（模块 D）。
+ * 幂等，所以可以放心按固定间隔反复调。
  */
-export async function respondToProposalAction(input: {
-  matchMomentId: string;
-  decision: "go" | "skip";
-  mode?: "demo" | "live";
-}): Promise<RespondResult> {
-  if (input.decision === "skip") {
-    return { ok: true, peerDecision: "skip", message: "好，回到匹配池继续找" };
-  }
+export async function syncMatchAction(): Promise<MatchResult> {
+  const user = await getCurrentUser();
+  if (!user) return { ok: false, message: "登录状态已失效，请重新登录" };
 
-  if ((input.mode ?? "demo") === "demo") {
-    await new Promise((resolve) => setTimeout(resolve, 1400));
-    return { ok: true, peerDecision: "go", message: "对方也点了「去」" };
-  }
+  const supabase = await createServerSupabaseClient();
 
-  return { ok: false, message: "登录版还没接通，先用试玩模式" };
+  try {
+    let match = await readMyMatch();
+
+    if (!match) {
+      const headerList = await headers();
+      const ip = headerList.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+      const limited = rateLimit(`match:${ip}`, 40, 10 * 60_000);
+      if (!limited.ok) return { ok: false, message: `找得太频繁了，${limited.retryAfterSeconds} 秒后再试` };
+
+      const { error } = await supabase.rpc("request_match");
+      if (error) return { ok: false, message: humanizeDbError(error.message) };
+      match = await readMyMatch();
+    }
+
+    // AI 生成第一轮确认文案：两边谁先看到谁写，数据库里"谁先写谁说了算"
+    if (match && !match.confirmMessage && match.status === "pending") {
+      const proposal = await buildConfirmProposal({
+        activityTag: "运动",
+        activityDetail: match.activityDetail,
+        distanceLabel: match.distanceLabel,
+        distanceMeters: null,
+        overlapMinutes: match.overlapMinutes ?? 0,
+      });
+
+      const { error } = await supabase.rpc("set_match_proposal", {
+        p_match_id: match.matchId,
+        p_place: proposal.place,
+        p_eta_minutes: proposal.etaMinutes,
+        p_confirm_message: proposal.message,
+      });
+      if (error) console.error("[syncMatch] 写入确认文案失败：", error.message);
+
+      match = await readMyMatch();
+    }
+
+    return { ok: true, match };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** 回应：去 / 算了。双方都去 → 返回的 match 里会带上 sessionId */
+export async function respondMatchAction(
+  matchId: string,
+  decision: "go" | "skip",
+): Promise<MatchResult> {
+  const user = await getCurrentUser();
+  if (!user) return { ok: false, message: "登录状态已失效，请重新登录" };
+
+  try {
+    const supabase = await createServerSupabaseClient();
+    const { error } = await supabase.rpc("respond_match", {
+      p_match_id: matchId,
+      p_decision: decision,
+    });
+    if (error) return { ok: false, message: humanizeDbError(error.message) };
+
+    return { ok: true, match: await readMyMatch() };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
 }

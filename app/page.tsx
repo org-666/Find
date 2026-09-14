@@ -145,12 +145,6 @@ function Landing() {
         <Link href="/login" className={buttonStyles({ size: "lg" })}>
           开始
         </Link>
-        <Link
-          href="/try"
-          className="block rounded-2xl border-2 border-ink bg-white py-3 text-center text-sm font-bold text-ink shadow-[4px_4px_0_#111111] transition hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[6px_6px_0_#111111]"
-        >
-          先试试，不用注册 →
-        </Link>
         <p className="pt-1 text-center text-xs font-medium text-ink/50">
           <Chip tone="white" className="mr-1.5 align-middle">
             18-30 岁
