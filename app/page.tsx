@@ -142,8 +142,14 @@ function Landing() {
       </ul>
 
       <div className="mt-auto space-y-3">
-        <Link href="/login" className={buttonStyles({ size: "lg" })}>
-          开始
+        <Link href="/signup" className={buttonStyles({ size: "lg" })}>
+          创建账号
+        </Link>
+        <Link
+          href="/login"
+          className="block rounded-2xl border-2 border-ink bg-white py-3 text-center text-sm font-bold text-ink shadow-[4px_4px_0_#111111] transition hover:-translate-x-0.5 hover:-translate-y-0.5 hover:shadow-[6px_6px_0_#111111]"
+        >
+          已经有账号，去登录
         </Link>
         <p className="pt-1 text-center text-xs font-medium text-ink/50">
           <Chip tone="white" className="mr-1.5 align-middle">

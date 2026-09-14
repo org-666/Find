@@ -1,17 +1,19 @@
 "use client";
 
 /**
- * 登录：邮箱验证码
+ * 注册 / 登录表单（同一个组件，用 mode 区分）
  *
- * 为什么砍掉手机号：手机号登录在云端必须接短信服务商（Twilio 等）才能真发短信，
- * 免费额度有限、发到国内号码还可能被监管限制。邮箱验证码不需要任何付费通道，是更实际的选择。
+ * 两者的技术差别只有一处：`shouldCreateUser`
+ *   - 注册：true  —— 邮箱没注册过就建账号
+ *   - 登录：false —— 邮箱没注册过时 GoTrue 返回 422「Signups not allowed for otp」，
+ *                    所以登录页能准确提示"这个邮箱还没注册过，去注册"
  *
- * 两条路都能登进来：
- * 1. 邮件里的 6 位验证码 → 填进格子
- * 2. 邮件里的链接 → 走 /auth/confirm 自动登录（换浏览器也能用，见那个文件的注释）
+ * 其余流程完全一样：收 6 位验证码 → 填进格子（输满自动提交）→ 建立会话。
+ * 邮件里的链接也能直接登录（走 /auth/confirm，不依赖浏览器 cookie）。
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, cn, inputBase, Notice, PageHeading } from "@/components/ui";
 import { createBrowserSupabaseClient } from "@/lib/supabase";
@@ -20,38 +22,73 @@ const RESEND_SECONDS = 60;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CODE_LENGTH = 6;
 
-/** Supabase 的错误是英文的，这里翻译成用户看得懂的话 */
-function humanizeAuthError(message: string): string {
-  const text = message.toLowerCase();
+export type AuthMode = "login" | "signup";
 
-  if (text.includes("not authorized")) {
-    return "这个邮箱不在授权名单里：现在用的还是 Supabase 内置邮件服务，它只能发给项目团队成员的邮箱。要发给任意邮箱，需要在 Authentication → Emails → SMTP Settings 里配一个自己的邮件服务（免费的可以选 QQ 邮箱 / 163 / Brevo）";
+const COPY = {
+  signup: {
+    title: "创建账号",
+    subtitle: "邮箱收个码就行，不用设密码",
+    action: "发送验证码",
+    switchText: "已经注册过了？",
+    switchLabel: "去登录",
+    switchHref: "/login",
+    footnote: "18-30 岁才能使用，下一步填生日时会校验",
+  },
+  login: {
+    title: "登录",
+    subtitle: "用你注册时的邮箱收码",
+    action: "发送验证码",
+    switchText: "还没有账号？",
+    switchLabel: "去注册",
+    switchHref: "/signup",
+    footnote: "没收到就看一眼垃圾箱",
+  },
+} as const;
+
+/** Supabase 的错误是英文的，这里翻译成用户看得懂的话 */
+function humanizeAuthError(message: string, mode: AuthMode): { text: string; toSignup?: boolean } {
+  const lower = message.toLowerCase();
+
+  // 登录页专属：这个邮箱根本没注册过
+  if (lower.includes("signups not allowed")) {
+    return mode === "login"
+      ? { text: "这个邮箱还没有注册过。先去创建一个账号吧 →", toSignup: true }
+      : { text: "注册通道暂时关闭了，去 Authentication → Sign In / Providers 里检查" };
   }
-  if (text.includes("rate limit") || text.includes("security purposes") || text.includes("too many")) {
-    return "发送太频繁了：等一分钟再试（免费邮件服务都有频率限制）";
+
+  if (lower.includes("not authorized")) {
+    return {
+      text: "这个邮箱不在授权名单里：现在用的还是 Supabase 内置邮件服务，它只能发给项目团队成员的邮箱。要发给任意邮箱，需要在 Authentication → Emails → SMTP Settings 里配一个自己的邮件服务",
+    };
   }
-  if (text.includes("email address") && text.includes("invalid")) return "邮箱格式不正确";
-  if (text.includes("signups not allowed") || text.includes("signup")) {
-    return "这个项目关闭了新用户注册，去 Authentication → Sign In / Providers → Email 里打开";
+  if (lower.includes("rate limit") || lower.includes("security purposes") || lower.includes("too many")) {
+    return { text: "发送太频繁了：等一分钟再试（免费邮件服务都有频率限制）" };
   }
-  if (text.includes("expired")) {
-    return "验证码已过期：每次重新发送都会作废之前那封邮件里的码，请用最新那封里的 6 位数字";
+  if (lower.includes("email address") && lower.includes("invalid")) {
+    return { text: "邮箱格式不正确" };
   }
-  if (text.includes("smtp") || text.includes("sending") || text.includes("mailer")) {
-    return "邮件发送失败：Supabase 的 SMTP 配置可能有问题，去 Authentication → Emails 检查一下";
+  if (lower.includes("expired")) {
+    return { text: "验证码已过期：每次重新发送都会作废之前那封邮件里的码，请用最新那封里的 6 位数字" };
   }
-  if (text.includes("token") || text.includes("otp") || text.includes("invalid")) {
-    return "验证码不对：请用最新那封邮件里的 6 位数字（收到过好几封的话，只有最新那封有效）；输错不会作废，可以直接再试一次";
+  if (lower.includes("smtp") || lower.includes("sending") || lower.includes("mailer")) {
+    return { text: "邮件发送失败：Supabase 的 SMTP 配置可能有问题，去 Authentication → Emails 检查一下" };
   }
-  return message;
+  if (lower.includes("token") || lower.includes("otp") || lower.includes("invalid")) {
+    return {
+      text: "验证码不对：请用最新那封邮件里的 6 位数字（收到过好几封的话，只有最新那封有效）；输错不会作废，可以直接再试一次",
+    };
+  }
+  return { text: message };
 }
 
-export function LoginForm({ initialError }: { initialError?: string | null }) {
+export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?: string | null }) {
   const router = useRouter();
+  const copy = COPY[mode];
+
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
-  const [error, setError] = useState<string | null>(initialError ?? null);
+  const [error, setError] = useState<ReactNode>(initialError ?? null);
   const [hint, setHint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [countdown, setCountdown] = useState(0);
@@ -80,9 +117,9 @@ export function LoginForm({ initialError }: { initialError?: string | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, step, busy]);
 
-  function fail(message: string) {
+  function fail(message: ReactNode) {
     setError(message);
-    setShakeKey((key) => key + 1); // 触发抖动动画
+    setShakeKey((key) => key + 1);
   }
 
   async function sendCode() {
@@ -100,14 +137,26 @@ export function LoginForm({ initialError }: { initialError?: string | null }) {
       const { error: sendError } = await supabase.auth.signInWithOtp({
         email: address,
         options: {
-          shouldCreateUser: true, // 没注册过就是注册，注册过就是登录
-          // 点邮件里的链接后回到自己的回调，由它把会话写进 cookie
+          // 这一行就是注册和登录的唯一技术差别
+          shouldCreateUser: mode === "signup",
           emailRedirectTo: `${window.location.origin}/auth/confirm`,
         },
       });
 
       if (sendError) {
-        fail(humanizeAuthError(sendError.message));
+        const humanized = humanizeAuthError(sendError.message, mode);
+        fail(
+          humanized.toSignup ? (
+            <>
+              {humanized.text.replace("→", "")}
+              <Link href="/signup" className="font-bold underline underline-offset-2">
+                去注册
+              </Link>
+            </>
+          ) : (
+            humanized.text
+          ),
+        );
         return;
       }
 
@@ -135,9 +184,8 @@ export function LoginForm({ initialError }: { initialError?: string | null }) {
     try {
       const supabase = createBrowserSupabaseClient();
 
-      // 邮件 token 的类型取决于这次是"新用户注册"还是"老用户登录"：
-      // 老用户是 email，新用户是 signup。先按 email 试，不匹配再按 signup 试一次。
-      // 校验失败不会作废验证码，所以重试是安全的。
+      // 邮件 token 的类型：老用户是 email，新注册是 signup。
+      // 先按 email 试，不匹配再按 signup 试一次（实测失败不会作废验证码，重试是安全的）。
       const first = await supabase.auth.verifyOtp({ email: address, token, type: "email" });
       const result =
         first.error && /invalid|expired|token/i.test(first.error.message)
@@ -145,12 +193,12 @@ export function LoginForm({ initialError }: { initialError?: string | null }) {
           : first;
 
       if (result.error) {
-        fail(humanizeAuthError(result.error.message));
-        autoSubmitted.current = false; // 允许改完再自动提交一次
+        fail(humanizeAuthError(result.error.message, mode).text);
+        autoSubmitted.current = false;
         return;
       }
 
-      // 会话已经写进 cookie，接下来去填资料（没填过的话）
+      // 会话已经写进 cookie；没填过资料的话首页会自动把你送去 /profile
       router.replace("/");
       router.refresh();
     } catch (caught) {
@@ -164,8 +212,8 @@ export function LoginForm({ initialError }: { initialError?: string | null }) {
   return (
     <div className="animate-rise space-y-7">
       <PageHeading
-        title={step === "email" ? "注册 / 登录" : "输入验证码"}
-        subtitle={step === "email" ? "邮箱收个码就行，没有密码" : `已发送到 ${address}`}
+        title={step === "email" ? copy.title : "输入验证码"}
+        subtitle={step === "email" ? copy.subtitle : `已发送到 ${address}`}
       />
 
       {step === "email" ? (
@@ -189,13 +237,11 @@ export function LoginForm({ initialError }: { initialError?: string | null }) {
             }}
             className={inputBase}
           />
-          <p className="text-xs leading-relaxed text-ink/50">
-            第一次登录就是注册。18-30 岁才能用，下一步填生日时会校验。
-          </p>
+          <p className="text-xs leading-relaxed text-ink/50">{copy.footnote}</p>
         </div>
       ) : (
         <div className="space-y-3">
-          {/* 隐形输入框盖在 6 个格子上：既保留原生粘贴/邮件自动填充，又能做分格视觉 */}
+          {/* 隐形输入框盖在 6 个格子上：保留系统粘贴/验证码自动填充 */}
           <div className="relative" onClick={() => otpRef.current?.focus()}>
             <input
               ref={otpRef}
@@ -277,11 +323,15 @@ export function LoginForm({ initialError }: { initialError?: string | null }) {
           loading={busy}
           onClick={() => (step === "email" ? void sendCode() : void verifyCode())}
         >
-          {busy ? "处理中…" : step === "email" ? "发送登录邮件" : "登录 / 注册"}
+          {busy ? "处理中…" : step === "email" ? copy.action : mode === "signup" ? "完成注册" : "登录"}
         </Button>
-        {step === "email" && (
-          <p className="text-center text-xs font-medium text-ink/45">收不到就看一眼垃圾箱</p>
-        )}
+
+        <p className="text-center text-xs font-medium text-ink/50">
+          {copy.switchText}{" "}
+          <Link href={copy.switchHref} className="font-bold text-ink underline underline-offset-2">
+            {copy.switchLabel}
+          </Link>
+        </p>
       </div>
     </div>
   );

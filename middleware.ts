@@ -74,8 +74,8 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // 已登录就别再看登录页了
-  if (user && pathname === "/login") {
+  // 已登录就别再看登录页/注册页了
+  if (user && (pathname === "/login" || pathname === "/signup")) {
     const homeUrl = request.nextUrl.clone();
     homeUrl.pathname = "/";
     homeUrl.search = "";
