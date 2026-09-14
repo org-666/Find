@@ -1,0 +1,303 @@
+@import "tailwindcss";
+
+@theme {
+  /* 纸底：暖白，不是冷灰白 */
+  --color-paper: #fffdf5;
+  --color-ink: #111111;
+
+  /* 荧光撞色：这是"活力"的来源，饱和度拉满，但只用在色块和小面积高亮上 */
+  --color-lime: #c8f135;
+  --color-coral: #ff5c5c;
+  --color-sky: #4fb8ff;
+  --color-lemon: #ffd43b;
+  --color-mint: #14c8a8;
+  --color-grape: #7c3aed;
+
+  /* 奶油黄：品牌标记的底色，比纸底暖一档，所以方块在纸面上仍然看得出边界 */
+  --color-cream: #fff6d8;
+
+  --font-sans: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+html {
+  overflow-x: hidden;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background-color: var(--color-lime);
+  color: var(--color-ink);
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ------------------------------- 背景：网点 + 色块 ------------------------------- */
+
+/* 网点：让纸底有质感，不是一片死白 */
+.dot-grid {
+  background-image: radial-gradient(rgba(17, 17, 17, 0.16) 1.2px, transparent 1.2px);
+  background-size: 22px 22px;
+}
+
+/* 鼠标视差（--mx / --my 由 JS 写入） */
+.drift-a {
+  transform: translate3d(calc(var(--mx, 0) * -26px), calc(var(--my, 0) * -18px), 0);
+}
+.drift-b {
+  transform: translate3d(calc(var(--mx, 0) * 20px), calc(var(--my, 0) * -24px), 0);
+}
+.drift-c {
+  transform: translate3d(calc(var(--mx, 0) * -14px), calc(var(--my, 0) * 22px), 0);
+}
+.drift-d {
+  transform: translate3d(calc(var(--mx, 0) * 30px), calc(var(--my, 0) * 16px), 0);
+}
+
+/* 色块缓慢呼吸，避免画面一动不动 */
+@keyframes blob-a {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(4%, 3%, 0) scale(1.08);
+  }
+}
+@keyframes blob-b {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  50% {
+    transform: translate3d(-5%, 4%, 0) scale(1);
+  }
+}
+@keyframes blob-c {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(3%, -4%, 0) scale(1.1);
+  }
+}
+
+.blob-a {
+  animation: blob-a 22s ease-in-out infinite;
+}
+.blob-b {
+  animation: blob-b 28s ease-in-out infinite;
+}
+.blob-c {
+  animation: blob-c 24s ease-in-out infinite;
+}
+
+/* 连线像数据一样流动 */
+@keyframes net-dash {
+  to {
+    stroke-dashoffset: -30;
+  }
+}
+.net-edge {
+  animation: net-dash 2.6s linear infinite;
+}
+
+/* ---------------------------------- 品牌标记 ---------------------------------- */
+
+/* 两个点：分离 → 重合 → 再分开 */
+@keyframes logo-left {
+  0%,
+  12% {
+    transform: translateX(0);
+  }
+  42%,
+  62% {
+    transform: translateX(6.5px);
+  }
+  92%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes logo-right {
+  0%,
+  12% {
+    transform: translateX(0);
+  }
+  42%,
+  62% {
+    transform: translateX(-6.5px);
+  }
+  92%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+@keyframes logo-core {
+  0%,
+  30% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  48% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  70% {
+    opacity: 0.16;
+    transform: scale(1.15);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+@keyframes logo-ring {
+  0%,
+  34% {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  46% {
+    opacity: 0.8;
+    transform: scale(0.9);
+  }
+  80%,
+  100% {
+    opacity: 0;
+    transform: scale(2.1);
+  }
+}
+
+.logo-node-left {
+  animation: logo-left 4.2s cubic-bezier(0.5, 0, 0.2, 1) infinite;
+}
+.logo-node-right {
+  animation: logo-right 4.2s cubic-bezier(0.5, 0, 0.2, 1) infinite;
+}
+.logo-core,
+.logo-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.logo-core {
+  animation: logo-core 4.2s ease-in-out infinite;
+}
+.logo-ring {
+  animation: logo-ring 4.2s ease-in-out infinite;
+}
+
+/* ---------------------------------- 交互动效 ---------------------------------- */
+
+@keyframes shake {
+  10%,
+  90% {
+    transform: translateX(-1px);
+  }
+  20%,
+  80% {
+    transform: translateX(2px);
+  }
+  30%,
+  50%,
+  70% {
+    transform: translateX(-4px);
+  }
+  40%,
+  60% {
+    transform: translateX(4px);
+  }
+}
+.animate-shake {
+  animation: shake 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-rise {
+  animation: rise 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 弹一下：用在"成了""匹配到"这种高光时刻 */
+@keyframes pop {
+  0% {
+    transform: scale(0.86) rotate(-2deg);
+  }
+  60% {
+    transform: scale(1.04) rotate(1deg);
+  }
+  100% {
+    transform: scale(1) rotate(0);
+  }
+}
+.animate-pop {
+  animation: pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* 贴纸式悬浮：鼠标一放上去就弹起来 */
+.pop-hover {
+  transition:
+    transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 140ms ease;
+}
+.pop-hover:hover {
+  transform: translate(-2px, -2px);
+}
+.pop-hover:active {
+  transform: translate(2px, 2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-shake,
+  .animate-rise,
+  .animate-pop,
+  .blob-a,
+  .blob-b,
+  .blob-c,
+  .net-edge,
+  .logo-node-left,
+  .logo-node-right,
+  .logo-core,
+  .logo-ring {
+    animation: none;
+  }
+
+  .drift-a,
+  .drift-b,
+  .drift-c,
+  .drift-d {
+    transform: none;
+  }
+
+  .pop-hover:hover,
+  .pop-hover:active {
+    transform: none;
+  }
+}
