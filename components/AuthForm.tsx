@@ -14,13 +14,41 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Button, cn, inputBase, Notice, PageHeading } from "@/components/ui";
 import { createBrowserSupabaseClient } from "@/lib/supabase";
 
 const RESEND_SECONDS = 60;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CODE_LENGTH = 6;
+
+/**
+ * 请求超时。
+ *
+ * 为什么必须有：supabase-js 默认**没有超时**。数据库在美西、用户在国内，
+ * 手机网络一抖请求就可能永远不返回 —— 界面就卡在"处理中…"转圈转到天荒地老。
+ * 宁可报一句"网络太慢"，也不能让用户对着一个转圈的按钮干等。
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label}超时（${REQUEST_TIMEOUT_MS / 1000} 秒没响应）`)), REQUEST_TIMEOUT_MS),
+    ),
+  ]);
+}
+
+/** 网络类错误也翻译成人话 */
+function humanizeNetworkError(message: string): string {
+  if (/超时/.test(message)) {
+    return "网络太慢，请求没在 20 秒内返回。检查一下手机网络，或者换个网络重试（服务器在美西，国内访问本来就偏慢）";
+  }
+  if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    return "网络请求失败：可能是手机网络断了，或者浏览器拦了请求，重试一次试试";
+  }
+  return message;
+}
 
 export type AuthMode = "login" | "signup";
 
@@ -82,7 +110,6 @@ function humanizeAuthError(message: string, mode: AuthMode): { text: string; toS
 }
 
 export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?: string | null }) {
-  const router = useRouter();
   const copy = COPY[mode];
 
   const [step, setStep] = useState<"email" | "code">("email");
@@ -189,14 +216,17 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
     setBusy(true);
     try {
       const supabase = createBrowserSupabaseClient();
-      const { error: sendError } = await supabase.auth.signInWithOtp({
-        email: address,
-        options: {
-          // 这一行就是注册和登录的唯一技术差别
-          shouldCreateUser: mode === "signup",
-          emailRedirectTo: `${window.location.origin}/auth/confirm`,
-        },
-      });
+      const { error: sendError } = await withTimeout(
+        supabase.auth.signInWithOtp({
+          email: address,
+          options: {
+            // 这一行就是注册和登录的唯一技术差别
+            shouldCreateUser: mode === "signup",
+            emailRedirectTo: `${window.location.origin}/auth/confirm`,
+          },
+        }),
+        "发送验证码",
+      );
 
       if (sendError) {
         const humanized = humanizeAuthError(sendError.message, mode);
@@ -222,7 +252,7 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
       setCountdown(RESEND_SECONDS);
       setHint(`邮件已发到 ${address}：把里面的 6 位数字填在下面，或者直接点邮件里的链接`);
     } catch (caught) {
-      fail(caught instanceof Error ? caught.message : String(caught));
+      fail(humanizeNetworkError(caught instanceof Error ? caught.message : String(caught)));
     } finally {
       setBusy(false);
     }
@@ -240,26 +270,31 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
     try {
       const supabase = createBrowserSupabaseClient();
 
-      // 邮件 token 的类型：老用户是 email，新注册是 signup。
-      // 先按 email 试，不匹配再按 signup 试一次（实测失败不会作废验证码，重试是安全的）。
-      const first = await supabase.auth.verifyOtp({ email: address, token, type: "email" });
-      const result =
-        first.error && /invalid|expired|token/i.test(first.error.message)
-          ? await supabase.auth.verifyOtp({ email: address, token, type: "signup" })
-          : first;
+      /**
+       * 只验一次就够了。
+       *
+       * 之前这里先按 email 验、失败再按 signup 验（兼容 token 类型），
+       * 但实测证明 type=email 对新用户和老用户都能通过（都是 200），
+       * 兜底纯属多余，只会在验证码错误时把等待时间翻倍。
+       */
+      const { error: verifyError } = await withTimeout(
+        supabase.auth.verifyOtp({ email: address, token, type: "email" }),
+        "验证验证码",
+      );
 
-      if (result.error) {
-        fail(humanizeAuthError(result.error.message, mode).text);
+      if (verifyError) {
+        fail(humanizeAuthError(verifyError.message, mode).text);
         autoSubmitted.current = false;
         return;
       }
 
-      // 会话已经写进 cookie；没填过资料的话首页会自动把你送去 /profile
+      // 会话已经写进 cookie。这里用整页跳转而不是客户端路由：
+      // 手机上客户端导航偶尔会因为 cookie 时序问题停在原地，
+      // 整页跳转能确保浏览器带着新 cookie 重新请求，最稳。
       clearSaved();
-      router.replace("/");
-      router.refresh();
+      window.location.replace("/");
     } catch (caught) {
-      fail(caught instanceof Error ? caught.message : String(caught));
+      fail(humanizeNetworkError(caught instanceof Error ? caught.message : String(caught)));
       autoSubmitted.current = false;
     } finally {
       setBusy(false);

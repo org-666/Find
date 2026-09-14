@@ -8,6 +8,24 @@
 import { createBrowserClient } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+/**
+ * 所有 Supabase 请求的超时时间。
+ *
+ * 为什么必须有：supabase-js 默认**没有超时**。这个项目的数据库在美西、用户在国内，
+ * 一次跨太平洋请求本来就要几百毫秒到一两秒，而国际线路抖动是常态。
+ * 一旦某个请求卡住不返回：
+ *   - 客户端：按钮永远转圈（"一直卡住"）
+ *   - 服务端：整页渲染永远不返回，浏览器白屏转圈
+ * 加上超时之后，最坏情况是报个错让人重试，而不是无限等待。
+ */
+export const SUPABASE_TIMEOUT_MS = 15_000;
+
+/** 带超时的 fetch；调用方自己传了 signal 就不覆盖 */
+export const fetchWithTimeout: typeof fetch = (input, init) => {
+  if (init?.signal) return fetch(input, init);
+  return fetch(input, { ...init, signal: AbortSignal.timeout(SUPABASE_TIMEOUT_MS) });
+};
+
 /** 读取 Supabase 环境变量；缺失时抛出带说明的错误，避免出现难以定位的 401 */
 export function getSupabaseEnv(): { url: string; anonKey: string } {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -38,6 +56,8 @@ export function createBrowserSupabaseClient(): SupabaseClient {
   if (browserClient) return browserClient;
 
   const { url, anonKey } = getSupabaseEnv();
-  browserClient = createBrowserClient(url, anonKey);
+  browserClient = createBrowserClient(url, anonKey, {
+    global: { fetch: fetchWithTimeout },
+  });
   return browserClient;
 }

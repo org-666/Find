@@ -9,7 +9,7 @@
 import { createServerClient } from "@supabase/ssr";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
-import { getSupabaseEnv } from "@/lib/supabase";
+import { getSupabaseEnv, fetchWithTimeout } from "@/lib/supabase";
 
 /** 服务端客户端：读写当前请求的 cookie，拿到的就是这个用户的登录态 */
 export async function createServerSupabaseClient(): Promise<SupabaseClient> {
@@ -17,6 +17,8 @@ export async function createServerSupabaseClient(): Promise<SupabaseClient> {
   const { url, anonKey } = getSupabaseEnv();
 
   return createServerClient(url, anonKey, {
+    // 超时：服务端请求一旦卡住，整页渲染就不会返回，浏览器会一直转圈
+    global: { fetch: fetchWithTimeout },
     cookies: {
       getAll() {
         return cookieStore.getAll();
