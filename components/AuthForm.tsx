@@ -95,15 +95,22 @@ function humanizeAuthError(message: string, mode: AuthMode): { text: string; toS
   if (lower.includes("email address") && lower.includes("invalid")) {
     return { text: "邮箱格式不正确" };
   }
-  if (lower.includes("expired")) {
-    return { text: "验证码已过期：每次重新发送都会作废之前那封邮件里的码，请用最新那封里的 6 位数字" };
-  }
   if (lower.includes("smtp") || lower.includes("sending") || lower.includes("mailer")) {
     return { text: "邮件发送失败：Supabase 的 SMTP 配置可能有问题，去 Authentication → Emails 检查一下" };
   }
-  if (lower.includes("token") || lower.includes("otp") || lower.includes("invalid")) {
+  /**
+   * GoTrue 对"验证码不对"和"验证码过期"返回的是同一句话
+   * （Token has expired or is invalid），所以这里不能写死成"已过期"——那样会误导人。
+   * 最真实的原因是：用的不是最新那封邮件里的码（每次重发都会作废之前的）。
+   */
+  if (
+    lower.includes("expired") ||
+    lower.includes("token") ||
+    lower.includes("otp") ||
+    lower.includes("invalid")
+  ) {
     return {
-      text: "验证码不对：请用最新那封邮件里的 6 位数字（收到过好几封的话，只有最新那封有效）；输错不会作废，可以直接再试一次",
+      text: "验证码无效：请用最新那封邮件里的 6 位数字——每点一次「重新发送」，之前那封邮件里的码就作废了。重新发一封，用最新那封再试。",
     };
   }
   return { text: message };
