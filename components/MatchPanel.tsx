@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { respondToProposalAction, searchMatchAction, type MatchView } from "@/app/match/actions";
 import type { ConfirmProposal } from "@/lib/ai-confirm";
 import { sessionDeadline } from "@/lib/chat";
@@ -42,6 +43,7 @@ type Props = {
 };
 
 export function MatchPanel({ moment, isDemo, onCancel, onEnterChat }: Props) {
+  const router = useRouter();
   const [phase, setPhase] = useState<Phase>("searching");
   const [match, setMatch] = useState<MatchView | null>(null);
   const [proposal, setProposal] = useState<ConfirmProposal | null>(null);
@@ -296,8 +298,9 @@ export function MatchPanel({ moment, isDemo, onCancel, onEnterChat }: Props) {
       </Card>
 
       <Notice tone="info">
-        双方都点了「去」，接下来开一个临时对话（只有「我到了 / 我晚点 / 算了」三个按钮），
-        局结束会自动关闭、不留记录。
+        {isDemo
+          ? "以上全是演示：对方是合成的，这条需求也没有写进数据库。真实的匹配要有账号才能进。"
+          : "双方都点了「去」，接下来开一个临时对话（只有「我到了 / 我晚点 / 算了」三个按钮），局结束会自动关闭、不留记录。"}
       </Notice>
 
       <div className="mt-auto space-y-2.5">
@@ -320,6 +323,11 @@ export function MatchPanel({ moment, isDemo, onCancel, onEnterChat }: Props) {
         >
           进临时对话
         </Button>
+        {isDemo && (
+          <Button type="button" variant="outline" onClick={() => router.push("/login")}>
+            注册后真的约到人
+          </Button>
+        )}
         <Button type="button" variant="ghost" size="md" onClick={onCancel}>
           结束这一局
         </Button>

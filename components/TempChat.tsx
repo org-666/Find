@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { closeSessionAction, demoPeerReplyAction, suggestReplyAction } from "@/app/chat/actions";
 import {
   MAX_MESSAGE_LENGTH,
@@ -34,6 +35,7 @@ type Props = {
 };
 
 export function TempChat({ session, isDemo, onClose }: Props) {
+  const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [suggestion, setSuggestion] = useState<{ text: string; source: "ai" | "local" } | null>(null);
@@ -165,8 +167,19 @@ export function TempChat({ session, isDemo, onClose }: Props) {
           聊天内容已经清掉了，系统没有留任何记录——这是 Find 的规则：做完即散。
         </Notice>
 
-        <div className="mt-auto">
-          <Button type="button" onClick={onClose}>
+        {isDemo && (
+          <p className="text-xs leading-relaxed text-ink/50">
+            刚才这一局是演示：对方是合成的，没有真人参与，也没有写进数据库。
+          </p>
+        )}
+
+        <div className="mt-auto space-y-2.5">
+          {isDemo && (
+            <Button type="button" onClick={() => router.push("/login")}>
+              注册后真的约到人
+            </Button>
+          )}
+          <Button type="button" variant={isDemo ? "outline" : "primary"} onClick={onClose}>
             回到首页
           </Button>
         </div>

@@ -1,118 +1,92 @@
 # Find · 登录（邮箱验证码）
 
-> 模块 A 的其他部分（资料、18-30 年龄门槛）见 `setup-module-a.md`。
+**当前状态：已配好，可用。** 登录方式只有邮箱，手机号已从代码里移除。
 
-## 一、为什么砍掉手机号
+## 一、线上配置（已通过 Management API 配好）
 
-原来的设计是「手机号 + 短信验证码」。实际接云端时发现这条路走不通：
-
-- Supabase 云端**必须**接一个短信服务商（Twilio / MessageBird / Vonage / TextLocal）才能开 Phone 登录
-- 只有本地开发（`config.toml` 的 `[auth.sms.test_otp]`）才有免费固定验证码，云端没有
-- Twilio 要绑卡，发到国内手机号还受短信监管限制，可能根本收不到
-
-邮箱验证码不需要任何付费通道，所以**只保留邮箱**。代码里手机号相关的部分已全部删除。
-
-## 二、当前状态：能用，但有硬限制
-
-现在走的是 Supabase **内置**邮件服务，它有两个官方写明的限制：
-
-| 限制 | 具体表现 |
+| 项 | 值 |
 |---|---|
-| **只能发给项目团队成员的邮箱** | 其他地址一律报 `Email address not authorized` |
-| **每小时 2 封** | 超过就报频率限制 |
+| Site URL | `https://find-moment.netlify.app` |
+| Redirect URLs | `https://find-moment.netlify.app/**`、`http://localhost:3000/**`、`http://127.0.0.1:3000/**` |
+| SMTP | `smtp.163.com:465`，发件人 `szc625810@163.com`，发件人名 `Find` |
+| 验证码位数 | **6**（必须和界面的 6 格一致） |
+| 邮件模板 | Confirm signup / Magic Link 两个都已改成含 `{{ .Token }}` + `{{ .TokenHash }}` 直连链接 |
 
-也就是说：**只有用你注册 Supabase 那个邮箱才能登录成功**。要让任意用户都能注册，必须配自己的 SMTP（下一节）。
+配置脚本：`scripts/supabase-setup-auth.mjs`（Site URL 等）、`scripts/supabase-setup-smtp.mjs`（SMTP + 模板）。
 
-## 三、配免费 SMTP（配完就能发给任意邮箱）
+## 二、踩坑记录（重要）
 
-### 方案 1：QQ 邮箱（国内最省事，完全免费）
+### 1. 免费版默认邮件服务不允许改模板
 
-1. 登录 QQ 邮箱 → **设置 → 账户** → 找到「POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV服务」
-2. 开启 **SMTP 服务**（需要短信验证），会拿到一串 **16 位授权码**——注意这不是你的 QQ 密码
-3. 打开 Supabase → **Authentication → Emails → SMTP Settings** → 打开 **Enable Custom SMTP**
-4. 填：
+第一次改模板时 Supabase 直接拒绝：
 
-   | 字段 | 值 |
-   |---|---|
-   | Host | `smtp.qq.com` |
-   | Port | `465` |
-   | Username | 你的 QQ 邮箱（如 `12345@qq.com`） |
-   | Password | 上面那串**授权码** |
-   | Sender email | 你的 QQ 邮箱 |
-   | Sender name | `Find` |
+```
+Email template modification is not available for free tier projects using the default email provider.
+Please upgrade your plan or configure a custom SMTP provider.
+```
 
-5. 保存。之后任意邮箱都能收到验证码了。
+**所以"改模板加验证码"这件事，必须先配 SMTP 才能做**——不是没保存、也不是改错模板，是平台不允许。
+这也解释了为什么在配 SMTP 之前，邮件里永远只有链接、没有 6 位码。
 
-> QQ 邮箱有每日发信上限（几百封），个人项目足够。
+### 2. 默认邮件服务只能发给项目团队成员的邮箱
 
-### 方案 2：163 邮箱
-`Host: smtp.163.com`、`Port: 465`，同样需要先在 163 邮箱设置里开启 SMTP 并拿授权码。
+官方文档写明的两个限制：
 
-### 方案 3：Brevo（国际服务，免费 300 封/天）
-`Host: smtp-relay.brevo.com`、`Port: 587`，注册后要验证一个发件邮箱，不需要自己有域名。
+- **只发给项目团队成员邮箱**，其他地址报 `Email address not authorized`
+- **每小时 2 封**
 
-### 方案 4：Resend（免费 3000 封/月）
-需要自己有个域名并验证，才能发给任意邮箱；没有域名时只能发给自己。不推荐给现在这个阶段。
+配了自定义 SMTP 之后：任意邮箱都能收，频率限制放宽到 30 封/小时（可在 Authentication → Rate Limits 调）。
 
-**配完 SMTP 之后**：Authentication → Rate Limits 里可以把邮件频率限制从默认的 30 封/小时调高。
+### 3. 验证码位数默认是 8，界面是 6
 
-## 四、还要在后台确认的配置
+项目默认 `mailer_otp_length = 8`，而登录界面是 6 格并在输满 6 位时自动提交——**不统一的话，用户输到第 6 位就会被提前提交然后报错**。已把服务端也设成 6。
 
-1. **Authentication → Sign In / Providers → Email** 打开（默认就是开的）
-2. **Authentication → URL Configuration**
-   - Site URL：`http://localhost:3000`
-   - Redirect URLs：加上 `http://localhost:3000/**`
-3. **邮件模板要带验证码**（默认模板只有链接，没有数字码）。改 **Confirm signup** 和 **Magic Link** 两个模板：
+### 4. `smtp_port` 必须传字符串
 
-   ```html
-   <h2>你的登录验证码</h2>
+Management API 的 `smtp_port` 传数字会报 `Invalid input: expected string, received number`，要传 `"465"`。
 
-   <p style="font-size:30px;font-weight:700;letter-spacing:8px;margin:20px 0">{{ .Token }}</p>
+### 5. 163/QQ 邮箱要用"授权码"而不是登录密码
 
-   <p>把这 6 位数字填到 Find 的验证码框里就能登录，5 分钟内有效。</p>
+在邮箱设置里开启 SMTP 服务后拿到的 16 位授权码，才是 SMTP 密码。
 
-   <p style="color:#888888;font-size:12px;margin-top:28px">
-     在电脑上点的可以用这个链接直接登录：<br />
-     <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email">直接登录</a>
-   </p>
-   ```
-
-## 五、代码这边做了什么
+## 三、代码这边的设计
 
 | 文件 | 作用 |
 |---|---|
-| `app/login/LoginForm.tsx` | 邮箱 + 验证码两步流程；输满 6 位自动提交；错误信息翻译成人话 |
-| `app/auth/confirm/route.ts` | 邮件里链接的回调：支持 `?code=`（PKCE）和 `?token_hash=`（任意浏览器可点）两种形式 |
-| `middleware.ts` | 兜底：邮件链接不管落在哪个路径，只要带 `?code=` 就转交给 `/auth/confirm` |
-| `lib/supabase-server.ts` | 从 cookie 读会话，供服务端组件判断登录态 |
+| `app/login/LoginForm.tsx` | 邮箱 + 6 位验证码两步流程；输满自动提交；错误翻译成中文 |
+| `app/auth/confirm/route.ts` | 邮件链接回调：同时支持 `?code=`（PKCE）和 `?token_hash=`（任意浏览器可点） |
+| `middleware.ts` | 兜底：带 `?code=` 的请求一律转交 `/auth/confirm` |
+| `lib/supabase-server.ts` | 从 cookie 读会话 |
 
-几个实现细节：
+- **验证码类型自动兼容**：老用户 token 是 `email`，新用户注册是 `signup`。先按 `email` 验，不匹配自动再按 `signup` 验（失败不作废验证码）
+- **登录即注册**：`shouldCreateUser: true`
+- **链接不依赖 cookie**：模板里用的是 `?token_hash={{ .TokenHash }}`
 
-- **验证码 type 自动兼容**：老用户登录的 token 类型是 `email`，新用户注册是 `signup`。代码先按 `email` 验，不匹配自动再按 `signup` 验一次（校验失败不会作废验证码，重试是安全的）。
-- **邮件链接不依赖浏览器 cookie**：模板里用的是 `?token_hash={{ .TokenHash }}` 而不是 Supabase 中转链接，所以**在手机、在别的浏览器点都能登录成功**。
-- **登录即注册**：`shouldCreateUser: true`，第一次登录就是注册，不需要单独的注册流程。
+## 四、验证清单
 
-## 六、登录后的流程
+| 步骤 | 预期 |
+|---|---|
+| 打开 `https://find-moment.netlify.app/login` | 只有一个邮箱输入框，没有手机号 |
+| 填邮箱 → 发送登录邮件 | 进入 6 格验证码页，60 秒重发倒计时 |
+| 查收邮件 | 标题「你的 Find 登录验证码」，正文有一个大的 6 位数字 |
+| 填 6 位码 | 自动提交 → 登录成功跳首页 |
+| 点邮件里的链接 | 也能直接登录（换浏览器/手机也有效） |
+| 用另一个邮箱试 | 应该同样能收到（这是配 SMTP 的意义） |
+| 18-30 岁之外 | 填资料时被拦截 |
+
+## 五、登录后
 
 ```
-/login 输入邮箱 → 收邮件
-   ↓ 填 6 位码 或 点链接
-/auth/confirm 建立会话（写 cookie）
+/login 邮箱 → 收码
+   ↓ 填码 或 点链接
+/auth/confirm 建立会话
    ↓
 /profile 填资料（昵称 / 头像 / 城市 / 生日）
-   ↓ 生日不在 18-30 岁 → 拦截，写不进库
+   ↓ 生日不在 18-30 岁 → 拦截
    ↓
 / 首页：说需求 → AI 解析 → 确认 → 匹配 → 临时对话
 ```
 
-## 七、验证清单
+## 六、要换发件邮箱时
 
-| 步骤 | 预期 |
-|---|---|
-| 打开 `/login`，填一个邮箱 | 只有邮箱一个输入框，没有手机号了 |
-| 点「发送登录邮件」 | 进入验证码页，60 秒重发倒计时 |
-| 邮件里应包含 | 6 位数字（前提：模板改过） |
-| 填入 6 位码 | 自动提交，登录成功跳首页 |
-| 点邮件里的链接 | 直接登录（换浏览器也行） |
-| 乱填邮箱 | 前端就拦住，不发请求 |
-| 链接失败 | 回到 `/login` 并提示用验证码登录 |
+改 `scripts/supabase-setup-smtp.mjs` 里的 `MAIL` 和 `smtp_host`（QQ 是 `smtp.qq.com`），用新的授权码重跑一遍即可。
