@@ -34,11 +34,15 @@ function humanizeAuthError(message: string): string {
   if (text.includes("signups not allowed") || text.includes("signup")) {
     return "这个项目关闭了新用户注册，去 Authentication → Sign In / Providers → Email 里打开";
   }
-  if (text.includes("expired")) return "验证码已过期，重新发一封";
+  if (text.includes("expired")) {
+    return "验证码已过期：每次重新发送都会作废之前那封邮件里的码，请用最新那封里的 6 位数字";
+  }
   if (text.includes("smtp") || text.includes("sending") || text.includes("mailer")) {
     return "邮件发送失败：Supabase 的 SMTP 配置可能有问题，去 Authentication → Emails 检查一下";
   }
-  if (text.includes("token") || text.includes("otp") || text.includes("invalid")) return "验证码不正确";
+  if (text.includes("token") || text.includes("otp") || text.includes("invalid")) {
+    return "验证码不对：请用最新那封邮件里的 6 位数字（收到过好几封的话，只有最新那封有效）；输错不会作废，可以直接再试一次";
+  }
   return message;
 }
 
