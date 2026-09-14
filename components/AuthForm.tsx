@@ -122,7 +122,18 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
   const [shakeKey, setShakeKey] = useState(0);
 
   const otpRef = useRef<HTMLInputElement>(null);
-  const autoSubmitted = useRef(false);
+  /**
+   * 上一次自动提交用的是哪串数字。
+   *
+   * 为什么记"内容"而不是一个 true/false 闸门：
+   * 之前失败分支里会把闸门重新打开，好让用户改完验证码能再自动提交一次；
+   * 但那个闸门同时是 effect 的防重入开关，于是形成了
+   * 「验证失败 → 闸门打开 → busy 变化触发 effect → 又提交一次 → 又失败」的**无限重试**，
+   * 界面上就是请求反复发、按钮一直显示「处理中…」。
+   *
+   * 改成记录内容后，同一串数字只会自动提交一次，只有用户真的改了才会再提交。
+   */
+  const lastAutoSubmitted = useRef<string | null>(null);
   /** 上次发码的时间戳，用来在页面被手机回收后重建倒计时 */
   const sentAt = useRef(0);
 
@@ -191,10 +202,11 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
     if (step === "code") otpRef.current?.focus();
   }, [step]);
 
-  // 输满 6 位自动提交
+  // 输满 6 位自动提交（同一串数字只提交一次，见 lastAutoSubmitted 的注释）
   useEffect(() => {
-    if (step !== "code" || token.length !== CODE_LENGTH || busy || autoSubmitted.current) return;
-    autoSubmitted.current = true;
+    if (step !== "code" || token.length !== CODE_LENGTH || busy) return;
+    if (lastAutoSubmitted.current === token) return;
+    lastAutoSubmitted.current = token;
     void verifyCode();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, step, busy]);
@@ -247,7 +259,7 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
 
       setStep("code");
       setToken("");
-      autoSubmitted.current = false;
+      lastAutoSubmitted.current = null; // 新码发布，允许再自动提交
       sentAt.current = Date.now();
       setCountdown(RESEND_SECONDS);
       setHint(`邮件已发到 ${address}：把里面的 6 位数字填在下面，或者直接点邮件里的链接`);
@@ -283,8 +295,9 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
       );
 
       if (verifyError) {
+        // 注意：这里**不能**重置自动提交闸门，否则会变成"失败→busy变化→effect再提交→又失败"的无限循环。
+        // 用户改动验证码时 onChange 会清掉闸门，那时才会重新自动提交。
         fail(humanizeAuthError(verifyError.message, mode).text);
-        autoSubmitted.current = false;
         return;
       }
 
@@ -295,7 +308,6 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
       window.location.replace("/");
     } catch (caught) {
       fail(humanizeNetworkError(caught instanceof Error ? caught.message : String(caught)));
-      autoSubmitted.current = false;
     } finally {
       setBusy(false);
     }
@@ -345,8 +357,10 @@ export function AuthForm({ mode, initialError }: { mode: AuthMode; initialError?
               value={token}
               disabled={busy}
               onChange={(event) => {
-                setToken(event.target.value.replace(/\D/g, "").slice(0, CODE_LENGTH));
-                autoSubmitted.current = false;
+                const next = event.target.value.replace(/\D/g, "").slice(0, CODE_LENGTH);
+                setToken(next);
+                // 用户改了验证码才允许重新自动提交（这是唯一的重置点）
+                if (next !== lastAutoSubmitted.current) lastAutoSubmitted.current = null;
               }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void verifyCode();
